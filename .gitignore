@@ -1,0 +1,16 @@
+# general
+.DS_Store
+*.log
+.env
+# node
+node_modules
+.next
+dist
+# python
+__pycache__/
+.venv/
+# go
+bin/
+# data
+pgdata/
+qdrant_storage/
