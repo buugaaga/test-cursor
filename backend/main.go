@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/qdrant/go-client/client"
 	"github.com/qdrant/go-client/qdrant"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,7 +23,7 @@ import (
 
 type AppDependencies struct {
 	Postgres    *pgxpool.Pool
-	Qdrant      *client.Client
+	Qdrant      *qdrant.Client
 	EmbedderURL string
 }
 
@@ -54,8 +53,8 @@ func initPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func initQdrant(ctx context.Context, host string, grpcPort int, useTLS bool) (*client.Client, error) {
-	qClient, err := client.NewClient(ctx, client.Config{
+func initQdrant(ctx context.Context, host string, grpcPort int, useTLS bool) (*qdrant.Client, error) {
+	qClient, err := qdrant.NewClient(&qdrant.Config{
 		Host:   host,
 		Port:   grpcPort,
 		UseTLS: useTLS,
@@ -67,8 +66,8 @@ func initQdrant(ctx context.Context, host string, grpcPort int, useTLS bool) (*c
 	return qClient, nil
 }
 
-func ensureCollection(ctx context.Context, q *client.Client, name string, size uint64) error {
-	_, err := q.CreateCollection(ctx, &qdrant.CreateCollection{
+func ensureCollection(ctx context.Context, q *qdrant.Client, name string, size uint64) error {
+	err := q.CreateCollection(ctx, &qdrant.CreateCollection{
 		CollectionName: name,
 		VectorsConfig: &qdrant.VectorsConfig{
 			Config: &qdrant.VectorsConfig_Params{Params: &qdrant.VectorParams{
@@ -101,9 +100,9 @@ type searchRequest struct {
 }
 
 type searchResult struct {
-	ID      string                 `json:"id"`
-	Score   float32                `json:"score"`
-	Payload map[string]any         `json:"payload"`
+	ID      string         `json:"id"`
+	Score   float32        `json:"score"`
+	Payload map[string]any `json:"payload"`
 }
 
 func callEmbedder(ctx context.Context, baseURL string, texts []string) ([][]float32, error) {
@@ -247,12 +246,21 @@ func main() {
 		}
 
 		vector := embeds[0]
-		sp, err := deps.Qdrant.SearchPoints(ctx, &qdrant.SearchPoints{
+
+		limit := uint64(req.Limit)
+		sp, err := deps.Qdrant.GetPointsClient().Search(ctx, &qdrant.SearchPoints{
 			CollectionName: "documents",
 			Vector:         vector,
-			Limit:          uint64(req.Limit),
+			Limit:          limit,
 			WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 		})
+		// sp, err := deps.Qdrant.Query(ctx, &qdrant.SearchPoints{
+		// 	// sp, err := deps.Qdrant.Query(ctx, &qdrant.QueryPoints{
+		// 	CollectionName: "documents",
+		// 	Vector:         vector,
+		// 	Limit:          uint64(req.Limit),
+		// 	WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
+		// })
 		if err != nil {
 			return c.JSON(http.StatusBadGateway, map[string]string{"error": "qdrant search failed"})
 		}
@@ -268,7 +276,13 @@ func main() {
 			default:
 				id = ""
 			}
-			results = append(results, searchResult{ID: id, Score: r.Score, Payload: r.Payload})
+
+			resultPayload := map[string]any{}
+			for k, v := range r.Payload {
+				resultPayload[k] = v
+			}
+
+			results = append(results, searchResult{ID: id, Score: r.Score, Payload: resultPayload})
 		}
 		return c.JSON(http.StatusOK, map[string]any{"results": results})
 	})
@@ -300,13 +314,13 @@ RETURNING id
 		}
 
 		type row struct {
-			ID        int64
-			Number    string
-			TextAr    string
-			TextRu    string
-			TextEn    string
-			Grade     string
-			Topics    []string
+			ID     int64
+			Number string
+			TextAr string
+			TextRu string
+			TextEn string
+			Grade  string
+			Topics []string
 		}
 		rows := make([]row, 0, len(req.Hadiths))
 		for _, h := range req.Hadiths {
@@ -331,10 +345,10 @@ RETURNING id
 		}
 
 		type doc struct {
-			ID        int64
-			Text      string
-			Lang      string
-			Number    string
+			ID     int64
+			Text   string
+			Lang   string
+			Number string
 		}
 		docs := make([]doc, 0, len(rows))
 		for _, r := range rows {
@@ -371,18 +385,22 @@ RETURNING id
 			points := make([]*qdrant.PointStruct, 0, len(embeds))
 			for k, vec := range embeds {
 				d := batch[k]
-				payload := map[string]any{
-					"origin_type":     "hadith",
-					"origin_id":       d.ID,
-					"collection_code": req.Collection.Code,
-					"number":          d.Number,
-					"lang":            d.Lang,
-					"title":           fmt.Sprintf("Hadith %s (%s)", d.Number, req.Collection.Code),
-					"snippet":         snippet(d.Text, 280),
-				}
+
+				payload := qdrant.NewValueMap(
+					map[string]any{
+						"origin_type":     "hadith",
+						"origin_id":       d.ID,
+						"collection_code": req.Collection.Code,
+						"number":          d.Number,
+						"lang":            d.Lang,
+						"title":           fmt.Sprintf("Hadith %s (%s)", d.Number, req.Collection.Code),
+						"snippet":         snippet(d.Text, 280),
+					},
+				)
+
 				points = append(points, &qdrant.PointStruct{
-					Id: &qdrant.PointId{PointIdOptions: &qdrant.PointId_Uuid{Uuid: uuid.NewString()}},
-					Vectors: &qdrant.Vectors{VectorsOptions: &qdrant.Vectors_Vector{Vector: vec}},
+					Id:      &qdrant.PointId{PointIdOptions: &qdrant.PointId_Uuid{Uuid: uuid.NewString()}},
+					Vectors: &qdrant.Vectors{VectorsOptions: &qdrant.Vectors_Vector{Vector: qdrant.NewVector(vec...)}},
 					Payload: payload,
 				})
 			}
@@ -401,8 +419,23 @@ RETURNING id
 	}
 }
 
-func snippet(s string, n int) string { if len(s) <= n { return s }; return s[:n] }
+func snippet(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
 
-func nullStr(s string) any { if s == "" { return nil }; return s }
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
 
-func toTextArray(a []string) any { if len(a) == 0 { return nil }; return a }
+func toTextArray(a []string) any {
+	if len(a) == 0 {
+		return nil
+	}
+	return a
+}
