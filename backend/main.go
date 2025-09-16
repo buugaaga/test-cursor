@@ -181,7 +181,7 @@ func main() {
 	ctx := context.Background()
 
 	port := mustGetenv("PORT", "8080")
-	dsn := mustGetenv("POSTGRES_DSN", "postgres://app:app@localhost:5432/islamdb?sslmode=disable")
+	dsn := mustGetenv("POSTGRES_DSN", "postgres://app:app@localhost:5433/islamdb?sslmode=disable")
 	qHost := mustGetenv("QDRANT_HOST", "localhost")
 	qPortStr := mustGetenv("QDRANT_GRPC_PORT", "6334")
 	embedderURL := mustGetenv("EMBEDDER_URL", "http://localhost:8000")
@@ -254,13 +254,6 @@ func main() {
 			Limit:          limit,
 			WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 		})
-		// sp, err := deps.Qdrant.Query(ctx, &qdrant.SearchPoints{
-		// 	// sp, err := deps.Qdrant.Query(ctx, &qdrant.QueryPoints{
-		// 	CollectionName: "documents",
-		// 	Vector:         vector,
-		// 	Limit:          uint64(req.Limit),
-		// 	WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
-		// })
 		if err != nil {
 			return c.JSON(http.StatusBadGateway, map[string]string{"error": "qdrant search failed"})
 		}
